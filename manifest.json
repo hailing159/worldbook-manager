@@ -1,11 +1,11 @@
 {
-  "display_name": "世界书快捷管理",
+  "display_name": "世界书管理器（手机端）",
   "loading_order": 13,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "author": "Claude",
+  "author": "ChatGPT",
   "version": "1.0.0",
   "homePage": ""
 }
