@@ -1,0 +1,11 @@
+{
+  "display_name": "世界书快捷管理",
+  "loading_order": 13,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Claude",
+  "version": "1.0.0",
+  "homePage": ""
+}
