@@ -5,7 +5,7 @@
 .wbm-wrap,#wbm-manager-root{min-width:0;max-width:100%;font-size:13px}
 .wbm-toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0 8px}
 .wbm-btn{border:1px solid var(--SmartThemeBorderColor,rgba(127,127,127,.3));border-radius:8px;padding:8px 10px;font-size:12px;cursor:pointer;color:inherit;background:transparent;max-width:100%}
-.wbm-primary{background:var(--SmartThemeQuoteColor,#2879d0);border-color:transparent;color:#fff}
+.wbm-primary{background:var(--SmartThemeBlurTintColor,rgba(127,127,127,.15));border:1px solid var(--SmartThemeQuoteColor,#2879d0);color:var(--SmartThemeBodyColor,inherit);font-weight:700}
 .wbm-danger{color:#d9534f!important}
 .wbm-tip{font-size:11px;opacity:.72;padding:4px 2px 8px}
 .wbm-list{max-height:60vh;min-height:70px;overflow-y:auto;overflow-x:hidden;border:1px solid var(--SmartThemeBorderColor,rgba(127,127,127,.25));border-radius:9px}
@@ -14,10 +14,10 @@
 /* 世界书名称行：背景加深，保证一眼能看到 */
 #worldbook-manager-inline .wbm-row{display:flex!important;align-items:center;gap:8px;min-width:0;max-width:100%;min-height:42px;padding:8px;background:var(--SmartThemeBlurTintColor,rgba(127,127,127,.1))}
 /* 自绘复选框：不依赖酒馆主题的复选框样式，勾选时一定能看到 ✓ */
-#worldbook-manager-inline input.wbm-check{-webkit-appearance:none!important;appearance:none!important;display:inline-block!important;position:relative;flex:0 0 22px;width:22px!important;height:22px!important;min-width:22px;margin:0!important;padding:0;border:2px solid var(--SmartThemeQuoteColor,#2879d0)!important;border-radius:5px!important;background:transparent!important;cursor:pointer;box-shadow:none!important}
+#worldbook-manager-inline input.wbm-check{-webkit-appearance:none!important;appearance:none!important;display:inline-block!important;position:relative;flex:0 0 22px;width:22px!important;height:22px!important;min-width:22px;margin:0!important;padding:0;border:2px solid var(--SmartThemeBodyColor,#999)!important;border-radius:5px!important;background:transparent!important;cursor:pointer;box-shadow:none!important}
 #worldbook-manager-inline input.wbm-check::before{content:none!important;display:none!important}
-#worldbook-manager-inline input.wbm-check:checked{background:var(--SmartThemeQuoteColor,#2879d0)!important}
-#worldbook-manager-inline input.wbm-check:checked::after{content:"";position:absolute;left:6px;top:2px;width:5px;height:11px;border:solid #fff;border-width:0 3px 3px 0;transform:rotate(45deg);display:block}
+#worldbook-manager-inline input.wbm-check:checked{background:rgba(127,127,127,.3)!important}
+#worldbook-manager-inline input.wbm-check:checked::after{content:"";position:absolute;left:6px;top:2px;width:5px;height:11px;border:solid var(--SmartThemeBodyColor,#fff);border-width:0 3px 3px 0;transform:rotate(45deg);display:block}
 #worldbook-manager-inline input.wbm-check:disabled{opacity:.5}
 #worldbook-manager-inline .wbm-name{display:flex;align-items:center;gap:6px;flex:1 1 0;min-width:0;cursor:pointer;color:var(--SmartThemeBodyColor,inherit);font-weight:700;font-size:13px;padding:4px 0;user-select:none}
 .wbm-arrow{flex:0 0 14px;font-size:11px;opacity:.7}

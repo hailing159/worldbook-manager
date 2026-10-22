@@ -110,14 +110,37 @@
     throw new Error('酒馆世界书列表接口不可用。' + errors.join('；'));
   }
 
+  function pickBook(d) {   // 找出真正含有 entries 的那一层
+    if (!d || typeof d !== 'object') return null;
+    for (const c of [d, d.worldinfo, d.data, d.originalData]) {
+      if (c && typeof c === 'object' && c.entries && typeof c.entries === 'object') return c;
+    }
+    return null;
+  }
+  const countEntries = d => (d && d.entries && typeof d.entries === 'object') ? Object.keys(d.entries).length : 0;
+
   async function getBook(name, force) {
     if (!force && bookCache.has(name)) return bookCache.get(name);
     if (loadingBooks.has(name)) return loadingBooks.get(name);
     const p = (async () => {
       let data = null;
       const api = await wi();
-      if (api) { try { data = await api.load(name); } catch (e) { log('酒馆读取失败，改用服务器接口：' + e.message); } }
-      if (!data) { const d = await post('/api/worldinfo/get', { name }); data = d.worldinfo || d.data || d; }
+      if (api) {
+        try {
+          const r = await api.load(name);
+          data = pickBook(r);
+          log('酒馆读取「' + name + '」：' + (r && typeof r === 'object' ? '字段[' + Object.keys(r).join(',') + ']' : String(r)) + '，条目 ' + countEntries(data));
+        } catch (e) { log('酒馆读取失败：' + e.message); }
+      }
+      if (!data || !countEntries(data)) {   // 酒馆那边没读到条目，再从服务器读一次，取条目多的
+        try {
+          const d = await post('/api/worldinfo/get', { name });
+          const sv = pickBook(d);
+          log('服务器读取「' + name + '」：字段[' + (d && typeof d === 'object' ? Object.keys(d).join(',') : '') + ']，条目 ' + countEntries(sv));
+          if (sv && (!data || countEntries(sv) > countEntries(data))) data = sv;
+        } catch (e) { log('服务器读取失败：' + e.message); if (!data) throw e; }
+      }
+      if (!data) data = { entries: {} };
       bookCache.set(name, data);
       return data;
     })();
@@ -166,10 +189,15 @@
 
   function render() {
     if (!root) return;
+    const savedScroll = [];
+    for (let el = root; el; el = el.parentElement) savedScroll.push([el, el.scrollTop]);
+    const oldList = root.querySelector('.wbm-list');
+    const listTop = oldList ? oldList.scrollTop : 0;
+    const winY = window.scrollY;
     const list = books.map(name => {
       const open = expanded.has(name), active = isGlobal(name), chosen = selected.has(name);
       const cnt = bookCache.has(name) ? entryCount(bookCache.get(name)) : null;
-      return `<section class="wbm-book"><div class="wbm-row">` +
+      return `<section class="wbm-book" data-book="${esc(name)}"><div class="wbm-row">` +
         `<input class="wbm-check wbm-global" type="checkbox" data-name="${esc(name)}" ${active ? 'checked' : ''} aria-label="全局启用 ${esc(name)}">` +
         `<div class="wbm-name" role="button" tabindex="0" data-a="expand" data-name="${esc(name)}"><span class="wbm-arrow">${open ? '▼' : '▶'}</span><span class="wbm-name-text">${esc(name)}</span></div>` +
         `<span class="wbm-book-state">${cnt ? `${cnt.on}/${cnt.total}` : ''}</span>` +
@@ -185,18 +213,43 @@
       `<div class="wbm-list">${list || '<div class="wbm-empty">未找到世界书，或列表接口暂不可用。</div>'}</div>` +
       `<div id="wbm-status"></div>` +
       `<details class="wbm-logs"><summary>运行日志（出问题时展开并截图）</summary><pre id="wbm-log">${esc(logs.join('\n'))}</pre></details></div>`;
+    const nl = root.querySelector('.wbm-list');
+    if (nl) nl.scrollTop = listTop;
+    savedScroll.forEach(([el, t]) => { el.scrollTop = t; });
+    if (window.scrollY !== winY) window.scrollTo(0, winY);
     for (const name of expanded) if (!bookCache.has(name)) loadEntries(name);
+  }
+
+  function bookSection(name) {
+    return root ? Array.from(root.querySelectorAll('.wbm-book')).find(x => x.dataset.book === name) : null;
+  }
+  // 展开/收起只改这一本，不重画整个列表（否则页面会跳回顶部）
+  function toggleExpand(name) {
+    const sec = bookSection(name);
+    if (!sec) { expanded.has(name) ? expanded.delete(name) : expanded.add(name); render(); return; }
+    const arrow = sec.querySelector('.wbm-arrow');
+    const det = sec.querySelector('.wbm-detail');
+    if (expanded.has(name)) { expanded.delete(name); if (det) det.remove(); if (arrow) arrow.textContent = '▶'; return; }
+    expanded.add(name);
+    if (arrow) arrow.textContent = '▼';
+    const div = document.createElement('div');
+    div.className = 'wbm-detail';
+    div.innerHTML = `<div class="wbm-entries" data-entry-for="${esc(name)}">${bookCache.has(name) ? renderEntries(name, bookCache.get(name)) : '<div class="wbm-loading">读取中…</div>'}</div>`;
+    sec.appendChild(div);
+    if (!bookCache.has(name)) loadEntries(name);
   }
 
   function entryBox(name) {
     return root ? Array.from(root.querySelectorAll('[data-entry-for]')).find(e => e.dataset.entryFor === name) : null;
   }
   async function loadEntries(name) {
-    const el = entryBox(name);
-    if (!el || bookCache.has(name) || loadingBooks.has(name)) return;
+    if (bookCache.has(name) || loadingBooks.has(name)) return;
     try {
       const data = await getBook(name);
-      render();   // 重画一次，顺便更新“已开启/总数”
+      const box = entryBox(name);
+      if (box) box.innerHTML = renderEntries(name, data);
+      const bs = bookSection(name)?.querySelector('.wbm-book-state');
+      if (bs) { const c = entryCount(data); bs.textContent = c.on + '/' + c.total; }
     } catch (e) {
       const box = entryBox(name);
       if (box) box.textContent = '读取失败：' + e.message;
@@ -269,7 +322,7 @@
   async function action(a, name) {
     if (busy) return;
     try {
-      if (a === 'expand') { expanded.has(name) ? expanded.delete(name) : expanded.add(name); render(); return; }
+      if (a === 'expand') { toggleExpand(name); return; }
       if (a === 'refresh') { bookCache.clear(); await refresh(); return; }
       if (a === 'manage') { manage = !manage; deleteArmed = false; if (!manage) selected.clear(); render(); return; }
       if (a === 'select-all') { books.forEach(n => selected.add(n)); render(); return; }
