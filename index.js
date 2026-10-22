@@ -1,44 +1,379 @@
-(function(){
-'use strict';
-const ROOT_ID='wbm-manager-root';
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const safeName=v=>String(v||'世界书').replace(/[\\/:*?"<>|]/g,'_').trim().slice(0,100)||'世界书';
-const logs=[],bookCache=new Map(),loadingBooks=new Set();
-let root=null,books=[],expanded=new Set(),selected=new Set(),manage=false,busy=false,statusTimer=null,deleteArmed=false;
-function log(s){logs.push(new Date().toLocaleTimeString()+' '+s);while(logs.length>60)logs.shift();const el=root&&root.querySelector('#wbm-log');if(el)el.textContent=logs.join('\n');}
-function status(s,bad){const el=root&&root.querySelector('#wbm-status');if(el){el.textContent=s;el.classList.toggle('bad',!!bad);}clearTimeout(statusTimer);statusTimer=setTimeout(()=>{if(el)el.textContent='';},8000);log((bad?'错误：':'')+s);}
-function headers(){const c=window.SillyTavern?.getContext?.();try{return c?.getRequestHeaders?.()||{'Content-Type':'application/json'};}catch(e){return {'Content-Type':'application/json'};}}
-async function request(url,opts={}){const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),25000);try{const h=Object.assign({},headers(),opts.headers||{});const r=await fetch(url,Object.assign({credentials:'same-origin',signal:ctrl.signal},opts,{headers:h}));const t=await r.text();let d={};try{d=t?JSON.parse(t):{};}catch(e){d={raw:t};}if(!r.ok)throw new Error(d.error||d.message||('HTTP '+r.status));if(d.error)throw new Error(typeof d.error==='string'?d.error:JSON.stringify(d.error));return d;}catch(e){throw new Error(e.name==='AbortError'?'请求超时':e.message||'请求失败');}finally{clearTimeout(timer);}}
-async function getList(){const c=window.SillyTavern?.getContext?.();const local=[window.world_names,window.worldNames,c?.world_names,c?.worldNames].find(Array.isArray);if(local&&local.length)return local.map(x=>typeof x==='string'?x:(x.name||x)).filter(x=>typeof x==='string');let errors=[];for(const [url,opts] of [['/api/worldinfo/list',{method:'GET'}],['/api/worldinfo/list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}]]){try{const d=await request(url,opts);const a=Array.isArray(d)?d:(d.world_names||d.worlds||d.names||d.world_info||d.data||[]);if(Array.isArray(a))return a.map(x=>typeof x==='string'?x:(x.name||x)).filter(x=>typeof x==='string');errors.push('列表响应格式无法识别');}catch(e){errors.push(url+' '+opts.method+'：'+e.message);}}throw new Error('酒馆世界书列表接口不可用。'+errors.join('；'));}
-async function getBook(name,force=false){if(!force&&bookCache.has(name))return bookCache.get(name);if(loadingBooks.has(name))return loadingBooks.get(name);const p=(async()=>{const d=await request('/api/worldinfo/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=d.worldinfo||d.data||d;bookCache.set(name,data);return data;})();loadingBooks.set(name,p);try{return await p;}finally{loadingBooks.delete(name);}}
-async function saveBook(name,data){const result=await request('/api/worldinfo/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,data})});bookCache.set(name,data);return result;}
-async function createBook(name){return request('/api/worldinfo/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});}
-async function deleteBook(name){return request('/api/worldinfo/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});}
-function nativeSelect(){return document.querySelector('#world_info');}
-function globalNames(){const el=nativeSelect();if(!el)return null;return Array.from(el.selectedOptions||[]).map(o=>o.value||o.textContent).filter(Boolean);}
-function isGlobal(name){const a=globalNames();return a?a.includes(name):false;}
-function setGlobal(name,on){const el=nativeSelect();if(!el)throw new Error('找不到酒馆原生全局世界书选择框（#world_info）。');const norm=s=>String(s||'').trim();let opt=Array.from(el.options).find(o=>norm(o.value)===norm(name)||norm(o.textContent)===norm(name));if(!opt)throw new Error('原生全局世界书列表中找不到：'+name+'。请先刷新酒馆的世界书列表。');opt.selected=!!on;const $=window.jQuery||window.$;if($)$(el).trigger('change');else el.dispatchEvent(new Event('change',{bubbles:true}));}
-function entryEnabled(v){return v?.disable!==true;}
-function entryContent(v){return String(v?.content??'').replace(/\s+/g,' ').trim();}
-function entryKeywords(v){const a=Array.isArray(v?.key)?v.key:(typeof v?.key==='string'?[v.key]:[]);return a.map(x=>String(x).trim()).filter(Boolean).join('、');}
-function render(){if(!root)return;const list=books.map(name=>{const open=expanded.has(name),active=isGlobal(name),chosen=selected.has(name);return `<section class="wbm-book"><div class="wbm-row"><input class="wbm-check wbm-global" type="checkbox" data-name="${esc(name)}" ${active?'checked':''} aria-label="将 ${esc(name)} 加入全局启用列表"><button class="wbm-expand" data-a="expand" data-name="${esc(name)}" aria-expanded="${open}">${open?'▼':'▶'}</button><button class="wbm-name" data-a="expand" data-name="${esc(name)}">${esc(name)}</button>${manage?`<input class="wbm-check wbm-pick" type="checkbox" data-name="${esc(name)}" ${chosen?'checked':''} aria-label="选择 ${esc(name)}">`:''}</div>${open?`<div class="wbm-detail"><div class="wbm-entries" data-entry-for="${esc(name)}">${bookCache.has(name)?renderEntries(name,bookCache.get(name)):'<div class="wbm-loading">读取中…</div>'}</div></div>`:''}</section>`;}).join('');
-root.innerHTML=`<div class="wbm-wrap"><div class="wbm-toolbar"><button class="wbm-btn wbm-primary" data-a="refresh">刷新列表</button><button class="wbm-btn" data-a="manage">${manage?'退出批量管理':'批量管理'}</button><button class="wbm-btn" data-a="upload">批量上传</button></div>${manage?`<div class="wbm-toolbar wbm-manage"><button class="wbm-btn" data-a="select-all">全选</button><button class="wbm-btn" data-a="select-none">全不选</button><button class="wbm-btn" data-a="download-selected">下载所选（${selected.size}）</button><button class="wbm-btn wbm-danger" data-a="delete-selected">删除所选（${selected.size}）</button></div>`:''}<div class="wbm-tip">世界书前的复选框＝全局启用；展开后条目前的复选框＝条目独立启用/关闭。条目内容只显示一行预览。</div><div class="wbm-list">${list||'<div class="wbm-empty">未找到世界书，或列表接口暂不可用。</div>'}</div><div id="wbm-status"></div><details class="wbm-logs"><summary>运行日志（出问题时展开并截图）</summary><pre id="wbm-log">${esc(logs.join('\n'))}</pre></details></div>`;
-root.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click',()=>action(b.dataset.a,b.dataset.name,b)));
-root.querySelectorAll('.wbm-global').forEach(c=>c.addEventListener('change',()=>{try{setGlobal(c.dataset.name,c.checked);status((c.checked?'已加入全局启用列表：':'已从全局启用列表移除：')+c.dataset.name);render();}catch(e){c.checked=!c.checked;status(e.message,true);}}));
-root.querySelectorAll('.wbm-entry-toggle').forEach(c=>c.addEventListener('change',()=>toggleEntry(c.dataset.book,c.dataset.uid,c.checked,c)));
-root.querySelectorAll('.wbm-pick').forEach(c=>c.addEventListener('change',()=>{c.checked?selected.add(c.dataset.name):selected.delete(c.dataset.name);const s=root.querySelector('[data-a="download-selected"]');if(s)s.textContent='下载所选（'+selected.size+'）';const d=root.querySelector('[data-a="delete-selected"]');if(d)d.textContent='删除所选（'+selected.size+'）';}));
-for(const name of expanded)if(!bookCache.has(name))loadEntries(name);
-}
-function renderEntries(name,data){const entries=data?.entries||{};const arr=Object.entries(entries);return arr.length?arr.map(([uid,v])=>{const comment=v.comment||('条目 '+uid),content=entryContent(v),keys=entryKeywords(v),on=entryEnabled(v);return `<div class="wbm-entry"><div class="wbm-entry-head"><input class="wbm-check wbm-entry-toggle" type="checkbox" data-book="${esc(name)}" data-uid="${esc(uid)}" ${on?'checked':''} aria-label="启用条目 ${esc(comment)}"><b>${esc(comment)}</b><span class="wbm-entry-state">${on?'开启':'关闭'}</span></div><div class="wbm-entry-preview" title="${esc(content||'暂无内容')}">${esc(content||'（暂无内容）')}</div>${keys?`<div class="wbm-entry-key">关键词：${esc(keys)}</div>`:''}</div>`;}).join(''):'<div class="wbm-muted">这本世界书没有条目。</div>';}
-async function loadEntries(name){const el=root&&root.querySelector(`[data-entry-for="${CSS.escape(name)}"]`);if(!el||bookCache.has(name)||loadingBooks.has(name))return;el.innerHTML='<div class="wbm-loading">读取中…</div>';try{const data=await getBook(name);if(!el.isConnected)return;el.innerHTML=renderEntries(name,data);el.querySelectorAll('.wbm-entry-toggle').forEach(c=>c.addEventListener('change',()=>toggleEntry(c.dataset.book,c.dataset.uid,c.checked,c)));}catch(e){if(el.isConnected)el.textContent='读取失败：'+e.message;log('读取世界书失败 '+name+'：'+e.message);}}
-async function toggleEntry(name,uid,on,checkbox){if(busy){checkbox.checked=!on;return;}checkbox.disabled=true;try{const data=await getBook(name);if(!data.entries||!data.entries[uid])throw new Error('找不到对应条目：'+uid);/* SillyTavern 世界书条目以 disable=true 表示禁用，未禁用即开启 */data.entries[uid].disable=!on;delete data.entries[uid].enabled;await saveBook(name,data);const actual=entryEnabled(data.entries[uid]);checkbox.checked=actual;const state=checkbox.closest('.wbm-entry-head')?.querySelector('.wbm-entry-state');if(state)state.textContent=actual?'开启':'关闭';status('已'+(actual?'开启':'关闭')+'条目：'+(data.entries[uid].comment||uid));log('条目开关已保存：'+name+' / '+uid+' disable='+data.entries[uid].disable);}catch(e){checkbox.checked=!on;status('条目开关保存失败：'+e.message,true);log('条目开关保存失败 '+name+' / '+uid+'：'+e.message);}finally{checkbox.disabled=false;}}
-function download(name,data){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=safeName(name)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-function fileInput(multiple){const input=document.createElement('input');input.type='file';input.accept='.json,application/json';input.multiple=!!multiple;input.style.display='none';root.appendChild(input);input.onchange=async()=>{const files=Array.from(input.files||[]);input.remove();if(!files.length)return;busy=true;try{let ok=0,fail=[];for(const f of files){try{const data=JSON.parse(await f.text());const name=safeName((data.name||f.name.replace(/\.json$/i,'')));if(books.includes(name)){fail.push(f.name+'：同名世界书已存在，已跳过');continue;}await createBook(name);await saveBook(name,data.data||data.worldinfo||data);ok++;}catch(e){fail.push(f.name+'：'+e.message);}}bookCache.clear();await refresh();status(`上传完成：成功 ${ok} 个，失败 ${fail.length} 个。`+(fail.length?' '+fail.join('；'):''),fail.length>0);}catch(e){status('上传失败：'+e.message,true);}finally{busy=false;}};input.click();}
-async function action(a,name){if(busy)return;try{if(a==='expand'){expanded.has(name)?expanded.delete(name):expanded.add(name);render();if(expanded.has(name))loadEntries(name);return;}if(a==='refresh'){bookCache.clear();await refresh();return;}if(a==='manage'){manage=!manage;deleteArmed=false;if(!manage)selected.clear();render();return;}if(a==='select-all'){books.forEach(n=>selected.add(n));render();return;}if(a==='select-none'){selected.clear();render();return;}if(a==='upload'){fileInput(true);return;}if(a==='download-selected'){if(!selected.size){status('请先勾选要下载的世界书',true);return;}busy=true;let ok=0,fail=[];for(const n of selected){try{download(n,await getBook(n));ok++;}catch(e){fail.push(n+': '+e.message);}}status(`批量下载完成：${ok} 本，失败 ${fail.length} 本。`+(fail.length?' '+fail.join('；'):''),fail.length>0);return;}if(a==='delete-selected'){if(!selected.size){status('请先勾选要删除的世界书',true);return;}if(!deleteArmed){deleteArmed=true;status('⚠️ 再点一次“删除所选”确认删除 '+selected.size+' 本：'+Array.from(selected).join('、')+'。此操作不可撤销。',true);const b=root.querySelector('[data-a="delete-selected"]');if(b)b.textContent='再次点击确认删除！';return;}deleteArmed=false;busy=true;let ok=0,fail=[];for(const n of selected){try{await deleteBook(n);bookCache.delete(n);ok++;}catch(e){fail.push(n+': '+e.message);}}selected.clear();await refresh();status(`批量删除完成：${ok} 本，失败 ${fail.length} 本。`+(fail.length?' '+fail.join('；'):''),fail.length>0);}}catch(e){status(e.message||'操作失败',true);log('动作 '+a+' 失败：'+e.message);}finally{busy=false;}}
-async function refresh(){try{status('正在读取世界书列表…');books=await getList();selected=new Set(Array.from(selected).filter(n=>books.includes(n)));expanded=new Set(Array.from(expanded).filter(n=>books.includes(n)));render();status('已读取 '+books.length+' 本世界书。条目只在展开时读取并缓存。');}catch(e){books=[];render();status('读取世界书列表失败：'+e.message,true);}}
-function createPanel(){const p=document.createElement('div');p.id='worldbook-manager-inline';p.innerHTML='<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>世界书管理器</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="wbm-manager-root"></div></div></div>';root=p.querySelector('#'+ROOT_ID);return p;}
-function mount(){if(document.getElementById('worldbook-manager-inline'))return true;const panel=createPanel();const page=document.querySelector('#WorldInfo, #world_info_block, #world-info, .world_info_block, [data-tab-content="worldinfo"]');if(page){page.appendChild(panel);log('面板已挂载到世界书页面底部');refresh();return true;}const select=document.querySelector('#world_info');if(select){let anchor=select.closest('.world_info_block, .world-info-block, .inline-drawer, .flex-container')||select.parentElement?.parentElement||select.parentElement;if(anchor&&anchor.parentElement){anchor.insertAdjacentElement('afterend',panel);log('面板已挂载到原生世界书选择区域下方');refresh();return true;}}return false;}
-function init(){if(mount())return;let tries=0;const t=setInterval(()=>{if(mount()||++tries>=120)clearInterval(t);},1000);}
-window.worldbookManager={refresh,getBooks:()=>books.slice(),getGlobalBooks:()=>globalNames()||[]};
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+(function () {
+  'use strict';
+  const EXT = 'worldbook-manager';
+
+  // ---------- 1. 工具函数 ----------
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const safeName = v => String(v || '世界书').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 100) || '世界书';
+
+  // ---------- 2. 状态 ----------
+  const logs = [];
+  const bookCache = new Map();
+  const loadingBooks = new Map();   // 修复：原来是 Set，却用了 get/set
+  let root = null, books = [], expanded = new Set(), selected = new Set();
+  let manage = false, busy = false, statusTimer = null, deleteArmed = false;
+  let wiModule = undefined;         // undefined=未尝试；null=不可用；object=可用
+
+  function log(s) {
+    logs.push(new Date().toLocaleTimeString() + ' ' + s);
+    while (logs.length > 60) logs.shift();
+    const el = root && root.querySelector('#wbm-log');
+    if (el) el.textContent = logs.join('\n');
+  }
+  function status(s, bad) {
+    const el = root && root.querySelector('#wbm-status');
+    if (el) { el.textContent = s; el.classList.toggle('bad', !!bad); }
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { const e = root && root.querySelector('#wbm-status'); if (e) e.textContent = ''; }, 8000);
+    log((bad ? '错误：' : '') + s);
+  }
+
+  // ---------- 3. 酒馆接口 ----------
+  function ctx() { try { return window.SillyTavern?.getContext?.() || null; } catch (e) { return null; } }
+  function headers() {
+    try { const h = ctx()?.getRequestHeaders?.(); if (h) return h; } catch (e) { /* ignore */ }
+    return { 'Content-Type': 'application/json' };
+  }
+  async function request(url, opts = {}) {
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 25000);
+    try {
+      const h = Object.assign({}, headers(), opts.headers || {});
+      const r = await fetch(url, Object.assign({ credentials: 'same-origin', signal: ctrl.signal }, opts, { headers: h }));
+      const t = await r.text();
+      let d = {};
+      try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { raw: t }; }
+      if (!r.ok) throw new Error((d && (d.error || d.message)) || ('HTTP ' + r.status));
+      if (d && d.error) throw new Error(typeof d.error === 'string' ? d.error : JSON.stringify(d.error));
+      return d;
+    } catch (e) {
+      throw new Error(e.name === 'AbortError' ? '请求超时' : (e.message || '请求失败'));
+    } finally { clearTimeout(timer); }
+  }
+  const post = (url, body) => request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+
+  // 酒馆自己的世界书函数（读写都走它，才能同步酒馆页面里的缓存）
+  async function wi() {
+    if (wiModule !== undefined) return wiModule;
+    const c = ctx();
+    if (c && typeof c.loadWorldInfo === 'function' && typeof c.saveWorldInfo === 'function') {
+      wiModule = { load: c.loadWorldInfo, save: c.saveWorldInfo, reload: c.reloadWorldInfoEditor, updateList: c.updateWorldInfoList, from: 'context' };
+      log('使用酒馆上下文的世界书接口');
+      return wiModule;
+    }
+    try {
+      const m = await import('/scripts/world-info.js');
+      if (typeof m.loadWorldInfo === 'function' && typeof m.saveWorldInfo === 'function') {
+        wiModule = { load: m.loadWorldInfo, save: m.saveWorldInfo, reload: m.reloadEditor, updateList: m.updateWorldInfoList, from: 'module' };
+        log('使用 /scripts/world-info.js 的世界书接口');
+        return wiModule;
+      }
+    } catch (e) { log('无法导入 world-info.js：' + e.message); }
+    wiModule = null;
+    log('酒馆世界书函数不可用，退回服务器接口（条目开关需刷新页面才生效）');
+    return wiModule;
+  }
+
+  function nativeSelect() { return document.querySelector('#world_info'); }
+  function globalNames() {
+    const el = nativeSelect();
+    if (!el) return null;
+    // 注意：酒馆这个下拉框的 option.value 是序号，名字在 textContent
+    return Array.from(el.selectedOptions || []).map(o => (o.textContent || '').trim()).filter(Boolean);
+  }
+  function isGlobal(name) { const a = globalNames(); return a ? a.includes(name) : false; }
+  function setGlobal(name, on) {
+    const el = nativeSelect();
+    if (!el) throw new Error('找不到酒馆原生全局世界书选择框（#world_info）。');
+    const norm = s => String(s || '').trim();
+    const opt = Array.from(el.options).find(o => norm(o.textContent) === norm(name));
+    if (!opt) throw new Error('原生全局世界书列表中找不到：' + name + '。请先刷新酒馆的世界书列表。');
+    opt.selected = !!on;
+    const $ = window.jQuery || window.$;
+    if ($) $(el).trigger('change'); else el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  async function getList() {
+    const c = ctx();
+    const fromCtx = [c?.world_names, c?.worldNames, window.world_names].find(a => Array.isArray(a) && a.length);
+    if (fromCtx) return fromCtx.map(x => typeof x === 'string' ? x : (x.name || x.file_id)).filter(x => typeof x === 'string');
+    const sel = nativeSelect();
+    if (sel && sel.options.length) return Array.from(sel.options).map(o => (o.textContent || '').trim()).filter(Boolean);
+    const errors = [];
+    for (const [url, opts] of [['/api/worldinfo/list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }], ['/api/worldinfo/list', { method: 'GET' }]]) {
+      try {
+        const d = await request(url, opts);
+        const a = Array.isArray(d) ? d : (d.world_names || d.worlds || d.names || d.data || []);
+        if (Array.isArray(a)) return a.map(x => typeof x === 'string' ? x : (x.name || x.file_id)).filter(x => typeof x === 'string');
+        errors.push('列表响应格式无法识别');
+      } catch (e) { errors.push(opts.method + '：' + e.message); }
+    }
+    throw new Error('酒馆世界书列表接口不可用。' + errors.join('；'));
+  }
+
+  async function getBook(name, force) {
+    if (!force && bookCache.has(name)) return bookCache.get(name);
+    if (loadingBooks.has(name)) return loadingBooks.get(name);
+    const p = (async () => {
+      let data = null;
+      const api = await wi();
+      if (api) { try { data = await api.load(name); } catch (e) { log('酒馆读取失败，改用服务器接口：' + e.message); } }
+      if (!data) { const d = await post('/api/worldinfo/get', { name }); data = d.worldinfo || d.data || d; }
+      bookCache.set(name, data);
+      return data;
+    })();
+    loadingBooks.set(name, p);
+    try { return await p; } finally { loadingBooks.delete(name); }
+  }
+
+  // 保存：优先走酒馆自己的 saveWorldInfo（同时更新酒馆页面内缓存），然后刷新酒馆的条目编辑器
+  async function saveBook(name, data) {
+    const api = await wi();
+    if (api) {
+      await api.save(name, data, true);
+      try { if (typeof api.reload === 'function') api.reload(name); } catch (e) { log('刷新酒馆编辑器失败（可忽略）：' + e.message); }
+    } else {
+      await post('/api/worldinfo/edit', { name, data });
+    }
+    bookCache.set(name, data);
+  }
+  async function deleteBook(name) { return post('/api/worldinfo/delete', { name }); }
+  async function updateNativeList() {
+    const api = await wi();
+    try { if (api && typeof api.updateList === 'function') await api.updateList(); } catch (e) { log('刷新酒馆世界书列表失败：' + e.message); }
+  }
+
+  // ---------- 4. 条目字段 ----------
+  const entryEnabled = v => v?.disable !== true;
+  const entryContent = v => String(v?.content ?? '').replace(/\s+/g, ' ').trim();
+  function entryKeywords(v) {
+    const a = Array.isArray(v?.key) ? v.key : (typeof v?.key === 'string' ? [v.key] : []);
+    return a.map(x => String(x).trim()).filter(Boolean).join('、');
+  }
+  function entryCount(data) {
+    const arr = Object.values(data?.entries || {});
+    return { total: arr.length, on: arr.filter(entryEnabled).length };
+  }
+
+  // ---------- 5. 渲染 ----------
+  function renderEntries(name, data) {
+    const arr = Object.entries(data?.entries || {});
+    if (!arr.length) return '<div class="wbm-muted">这本世界书没有条目。</div>';
+    return arr.map(([uid, v]) => {
+      const comment = v.comment || ('条目 ' + uid), content = entryContent(v), keys = entryKeywords(v), on = entryEnabled(v);
+      return `<div class="wbm-entry"><div class="wbm-entry-head"><input class="wbm-check wbm-entry-toggle" type="checkbox" data-book="${esc(name)}" data-uid="${esc(uid)}" ${on ? 'checked' : ''} aria-label="启用条目 ${esc(comment)}"><b>${esc(comment)}</b><span class="wbm-entry-state">${on ? '开启' : '关闭'}</span></div><div class="wbm-entry-preview" title="${esc(content || '暂无内容')}">${esc(content || '（暂无内容）')}</div>${keys ? `<div class="wbm-entry-key">关键词：${esc(keys)}</div>` : ''}</div>`;
+    }).join('');
+  }
+
+  function render() {
+    if (!root) return;
+    const list = books.map(name => {
+      const open = expanded.has(name), active = isGlobal(name), chosen = selected.has(name);
+      const cnt = bookCache.has(name) ? entryCount(bookCache.get(name)) : null;
+      return `<section class="wbm-book"><div class="wbm-row">` +
+        `<input class="wbm-check wbm-global" type="checkbox" data-name="${esc(name)}" ${active ? 'checked' : ''} aria-label="全局启用 ${esc(name)}">` +
+        `<div class="wbm-name" role="button" tabindex="0" data-a="expand" data-name="${esc(name)}"><span class="wbm-arrow">${open ? '▼' : '▶'}</span><span class="wbm-name-text">${esc(name)}</span></div>` +
+        `<span class="wbm-book-state">${cnt ? `${cnt.on}/${cnt.total}` : ''}</span>` +
+        (manage ? `<input class="wbm-check wbm-pick" type="checkbox" data-name="${esc(name)}" ${chosen ? 'checked' : ''} aria-label="选择 ${esc(name)}">` : '') +
+        `</div>` +
+        (open ? `<div class="wbm-detail"><div class="wbm-entries" data-entry-for="${esc(name)}">${bookCache.has(name) ? renderEntries(name, bookCache.get(name)) : '<div class="wbm-loading">读取中…</div>'}</div></div>` : '') +
+        `</section>`;
+    }).join('');
+    root.innerHTML =
+      `<div class="wbm-wrap"><div class="wbm-toolbar"><button type="button" class="wbm-btn wbm-primary" data-a="refresh">刷新列表</button><button type="button" class="wbm-btn" data-a="manage">${manage ? '退出批量管理' : '批量管理'}</button><button type="button" class="wbm-btn" data-a="upload">批量上传</button></div>` +
+      (manage ? `<div class="wbm-toolbar"><button type="button" class="wbm-btn" data-a="select-all">全选</button><button type="button" class="wbm-btn" data-a="select-none">全不选</button><button type="button" class="wbm-btn" data-a="download-selected">下载所选（${selected.size}）</button><button type="button" class="wbm-btn wbm-danger" data-a="delete-selected">${deleteArmed ? '再次点击确认删除！' : `删除所选（${selected.size}）`}</button></div>` : '') +
+      `<div class="wbm-tip">☑ 世界书名前的复选框＝全局启用/关闭；展开后每个条目前的复选框＝该条目开启/关闭（右侧数字＝已开启条目数/总数）。</div>` +
+      `<div class="wbm-list">${list || '<div class="wbm-empty">未找到世界书，或列表接口暂不可用。</div>'}</div>` +
+      `<div id="wbm-status"></div>` +
+      `<details class="wbm-logs"><summary>运行日志（出问题时展开并截图）</summary><pre id="wbm-log">${esc(logs.join('\n'))}</pre></details></div>`;
+    for (const name of expanded) if (!bookCache.has(name)) loadEntries(name);
+  }
+
+  function entryBox(name) {
+    return root ? Array.from(root.querySelectorAll('[data-entry-for]')).find(e => e.dataset.entryFor === name) : null;
+  }
+  async function loadEntries(name) {
+    const el = entryBox(name);
+    if (!el || bookCache.has(name) || loadingBooks.has(name)) return;
+    try {
+      const data = await getBook(name);
+      render();   // 重画一次，顺便更新“已开启/总数”
+    } catch (e) {
+      const box = entryBox(name);
+      if (box) box.textContent = '读取失败：' + e.message;
+      log('读取世界书失败 ' + name + '：' + e.message);
+    }
+  }
+
+  async function toggleEntry(name, uid, on, checkbox) {
+    if (busy) { checkbox.checked = !on; return; }
+    checkbox.disabled = true;
+    try {
+      const data = await getBook(name);
+      if (!data.entries || !data.entries[uid]) throw new Error('找不到对应条目：' + uid);
+      data.entries[uid].disable = !on;   // 酒馆：disable=true 表示关闭
+      await saveBook(name, data);
+      const actual = entryEnabled(data.entries[uid]);
+      checkbox.checked = actual;
+      const st = checkbox.closest('.wbm-entry-head')?.querySelector('.wbm-entry-state');
+      if (st) st.textContent = actual ? '开启' : '关闭';
+      const bs = checkbox.closest('.wbm-book')?.querySelector('.wbm-book-state');
+      if (bs) { const c = entryCount(data); bs.textContent = c.on + '/' + c.total; }
+      const api = await wi();
+      status('已' + (actual ? '开启' : '关闭') + '条目：' + (data.entries[uid].comment || uid) + (api ? '' : '（仅写入文件，请刷新酒馆页面后生效）'), !api);
+      log('条目已保存 ' + name + ' / ' + uid + ' disable=' + data.entries[uid].disable);
+    } catch (e) {
+      checkbox.checked = !on;
+      bookCache.delete(name);
+      status('条目开关保存失败：' + e.message, true);
+    } finally { checkbox.disabled = false; }
+  }
+
+  // ---------- 6. 下载 / 上传 ----------
+  function download(name, data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = safeName(name) + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+  function fileInput() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json,application/json'; input.multiple = true; input.style.display = 'none';
+    root.appendChild(input);
+    input.onchange = async () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      if (!files.length) return;
+      busy = true;
+      try {
+        let ok = 0; const fail = [];
+        for (const f of files) {
+          try {
+            const raw = JSON.parse(await f.text());
+            const name = safeName(f.name.replace(/\.json$/i, ''));
+            if (books.includes(name)) { fail.push(f.name + '：同名世界书已存在，已跳过'); continue; }
+            const data = raw.entries ? raw : (raw.data || raw.worldinfo || raw);
+            if (!data || typeof data.entries !== 'object') throw new Error('不是世界书格式（缺少 entries）');
+            await post('/api/worldinfo/edit', { name, data });   // edit 会直接创建文件
+            ok++;
+          } catch (e) { fail.push(f.name + '：' + e.message); }
+        }
+        bookCache.clear();
+        await updateNativeList();
+        await refresh();
+        status(`上传完成：成功 ${ok} 个，失败 ${fail.length} 个。` + (fail.length ? ' ' + fail.join('；') : ''), fail.length > 0);
+      } catch (e) { status('上传失败：' + e.message, true); } finally { busy = false; }
+    };
+    input.click();
+  }
+
+  // ---------- 7. 动作 ----------
+  async function action(a, name) {
+    if (busy) return;
+    try {
+      if (a === 'expand') { expanded.has(name) ? expanded.delete(name) : expanded.add(name); render(); return; }
+      if (a === 'refresh') { bookCache.clear(); await refresh(); return; }
+      if (a === 'manage') { manage = !manage; deleteArmed = false; if (!manage) selected.clear(); render(); return; }
+      if (a === 'select-all') { books.forEach(n => selected.add(n)); render(); return; }
+      if (a === 'select-none') { selected.clear(); render(); return; }
+      if (a === 'upload') { fileInput(); return; }
+      if (a === 'download-selected') {
+        if (!selected.size) { status('请先勾选要下载的世界书', true); return; }
+        busy = true; let ok = 0; const fail = [];
+        for (const n of selected) { try { download(n, await getBook(n, true)); ok++; } catch (e) { fail.push(n + ': ' + e.message); } }
+        status(`批量下载完成：${ok} 本，失败 ${fail.length} 本。` + (fail.length ? ' ' + fail.join('；') : ''), fail.length > 0);
+        return;
+      }
+      if (a === 'delete-selected') {
+        if (!selected.size) { status('请先勾选要删除的世界书', true); return; }
+        if (!deleteArmed) {
+          deleteArmed = true; render();
+          status('⚠️ 再点一次“删除所选”确认删除 ' + selected.size + ' 本：' + Array.from(selected).join('、') + '。此操作不可撤销。', true);
+          return;
+        }
+        deleteArmed = false; busy = true; let ok = 0; const fail = [];
+        for (const n of Array.from(selected)) { try { await deleteBook(n); bookCache.delete(n); ok++; } catch (e) { fail.push(n + ': ' + e.message); } }
+        selected.clear();
+        await updateNativeList();
+        await refresh();
+        status(`批量删除完成：${ok} 本，失败 ${fail.length} 本。` + (fail.length ? ' ' + fail.join('；') : ''), fail.length > 0);
+      }
+    } catch (e) { status(e.message || '操作失败', true); } finally { busy = false; }
+  }
+
+  async function refresh() {
+    try {
+      status('正在读取世界书列表…');
+      books = await getList();
+      selected = new Set(Array.from(selected).filter(n => books.includes(n)));
+      expanded = new Set(Array.from(expanded).filter(n => books.includes(n)));
+      render();
+      status('已读取 ' + books.length + ' 本世界书。条目只在展开时读取。');
+    } catch (e) { books = []; render(); status('读取世界书列表失败：' + e.message, true); }
+  }
+
+  // ---------- 8. 挂载 ----------
+  function bindEvents() {
+    root.addEventListener('click', e => {
+      const t = e.target.closest && e.target.closest('[data-a]');
+      if (t && root.contains(t)) action(t.dataset.a, t.dataset.name, t);
+    });
+    root.addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[data-a="expand"]')) { e.preventDefault(); action('expand', e.target.dataset.name); }
+    });
+    root.addEventListener('change', e => {
+      const c = e.target;
+      if (!c || !c.classList) return;
+      if (c.classList.contains('wbm-global')) {
+        try { setGlobal(c.dataset.name, c.checked); status((c.checked ? '已全局启用：' : '已取消全局启用：') + c.dataset.name); }
+        catch (err) { c.checked = !c.checked; status(err.message, true); }
+      } else if (c.classList.contains('wbm-entry-toggle')) {
+        toggleEntry(c.dataset.book, c.dataset.uid, c.checked, c);
+      } else if (c.classList.contains('wbm-pick')) {
+        c.checked ? selected.add(c.dataset.name) : selected.delete(c.dataset.name);
+        const s = root.querySelector('[data-a="download-selected"]'); if (s) s.textContent = '下载所选（' + selected.size + '）';
+        const d = root.querySelector('[data-a="delete-selected"]'); if (d && !deleteArmed) d.textContent = '删除所选（' + selected.size + '）';
+      }
+    });
+  }
+
+  function createPanel() {
+    const p = document.createElement('div');
+    p.id = 'worldbook-manager-inline';
+    p.innerHTML = '<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>世界书管理器</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="wbm-manager-root"></div></div></div>';
+    root = p.querySelector('#wbm-manager-root');
+    bindEvents();
+    return p;
+  }
+
+  function mount() {
+    if (document.getElementById('worldbook-manager-inline')) return true;
+    const page = document.querySelector('#WorldInfo, #world_info_block, #world-info, .world_info_block, [data-tab-content="worldinfo"]');
+    if (page) {
+      page.appendChild(createPanel());
+      log('面板已挂载到世界书页面底部');
+      render(); refresh();
+      return true;
+    }
+    const select = nativeSelect();
+    if (select) {
+      const anchor = select.closest('.world_info_block, .world-info-block, .inline-drawer, .flex-container') || select.parentElement?.parentElement || select.parentElement;
+      if (anchor && anchor.parentElement) {
+        anchor.insertAdjacentElement('afterend', createPanel());
+        log('面板已挂载到原生世界书选择区域下方');
+        render(); refresh();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function init() {
+    if (mount()) return;
+    let tries = 0;
+    const t = setInterval(() => { if (mount() || ++tries >= 120) clearInterval(t); }, 1000);
+  }
+
+  window.worldbookManager = { refresh, getBooks: () => books.slice(), getGlobalBooks: () => globalNames() || [] };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
