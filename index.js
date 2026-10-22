@@ -12,6 +12,7 @@
   const loadingBooks = new Map();   // 修复：原来是 Set，却用了 get/set
   let root = null, books = [], expanded = new Set(), selected = new Set();
   let manage = false, busy = false, statusTimer = null, deleteArmed = false;
+  let fileMap = new Map();          // 显示名 -> 服务器上的真实文件名
   let wiModule = undefined;         // undefined=未尝试；null=不可用；object=可用
 
   function log(s) {
@@ -92,22 +93,38 @@
     if ($) $(el).trigger('change'); else el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  async function loadFileMap() {
+    try {
+      const d = await post('/api/worldinfo/list', {});
+      const arr = Array.isArray(d) ? d : (d.world_names || d.worlds || d.data || []);
+      const m = new Map(), names = [];
+      arr.forEach(x => {
+        if (typeof x === 'string') { m.set(x, x); names.push(x); }
+        else if (x && typeof x === 'object') {
+          const id = x.file_id || x.name, nm = x.name || x.file_id;
+          if (id) { m.set(nm, id); m.set(id, id); names.push(nm); }
+        }
+      });
+      fileMap = m;
+      const bad = Array.from(m).filter(([k, v]) => k !== v);
+      if (bad.length) log('名称与文件名不一致：' + bad.map(([k, v]) => k + ' → ' + v).join('；'));
+      return names;
+    } catch (e) { log('文件列表接口失败：' + e.message); return []; }
+  }
+  const sid = name => fileMap.get(name) || name;   // 发给服务器时用真实文件名
+
   async function getList() {
+    const names = [];
+    const add = n => { if (typeof n === 'string' && n && !names.includes(n)) names.push(n); };
     const c = ctx();
     const fromCtx = [c?.world_names, c?.worldNames, window.world_names].find(a => Array.isArray(a) && a.length);
-    if (fromCtx) return fromCtx.map(x => typeof x === 'string' ? x : (x.name || x.file_id)).filter(x => typeof x === 'string');
+    if (fromCtx) fromCtx.forEach(x => add(typeof x === 'string' ? x : (x.name || x.file_id)));
     const sel = nativeSelect();
-    if (sel && sel.options.length) return Array.from(sel.options).map(o => (o.textContent || '').trim()).filter(Boolean);
-    const errors = [];
-    for (const [url, opts] of [['/api/worldinfo/list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }], ['/api/worldinfo/list', { method: 'GET' }]]) {
-      try {
-        const d = await request(url, opts);
-        const a = Array.isArray(d) ? d : (d.world_names || d.worlds || d.names || d.data || []);
-        if (Array.isArray(a)) return a.map(x => typeof x === 'string' ? x : (x.name || x.file_id)).filter(x => typeof x === 'string');
-        errors.push('列表响应格式无法识别');
-      } catch (e) { errors.push(opts.method + '：' + e.message); }
-    }
-    throw new Error('酒馆世界书列表接口不可用。' + errors.join('；'));
+    if (!names.length && sel) Array.from(sel.options).forEach(o => add(o.textContent));   // 不做 trim，名字末尾的空格也是名字的一部分
+    const apiNames = await loadFileMap();
+    apiNames.forEach(add);
+    if (!names.length) throw new Error('酒馆世界书列表接口不可用（没有读到任何世界书）。');
+    return names;
   }
 
   function pickBook(d) {   // 找出真正含有 entries 的那一层
@@ -125,7 +142,8 @@
     const p = (async () => {
       let data = null;
       const api = await wi();
-      if (api) {
+      const id = sid(name);
+      if (api && id === name) {
         try {
           const r = await api.load(name);
           data = pickBook(r);
@@ -134,7 +152,7 @@
       }
       if (!data || !countEntries(data)) {   // 酒馆那边没读到条目，再从服务器读一次，取条目多的
         try {
-          const d = await post('/api/worldinfo/get', { name });
+          const d = await post('/api/worldinfo/get', { name: id });
           const sv = pickBook(d);
           log('服务器读取「' + name + '」：字段[' + (d && typeof d === 'object' ? Object.keys(d).join(',') : '') + ']，条目 ' + countEntries(sv));
           if (sv && (!data || countEntries(sv) > countEntries(data))) data = sv;
@@ -151,15 +169,15 @@
   // 保存：优先走酒馆自己的 saveWorldInfo（同时更新酒馆页面内缓存），然后刷新酒馆的条目编辑器
   async function saveBook(name, data) {
     const api = await wi();
-    if (api) {
+    if (api && sid(name) === name) {
       await api.save(name, data, true);
       try { if (typeof api.reload === 'function') api.reload(name); } catch (e) { log('刷新酒馆编辑器失败（可忽略）：' + e.message); }
     } else {
-      await post('/api/worldinfo/edit', { name, data });
+      await post('/api/worldinfo/edit', { name: sid(name), data });
     }
     bookCache.set(name, data);
   }
-  async function deleteBook(name) { return post('/api/worldinfo/delete', { name }); }
+  async function deleteBook(name) { return post('/api/worldinfo/delete', { name: sid(name) }); }
   async function updateNativeList() {
     const api = await wi();
     try { if (api && typeof api.updateList === 'function') await api.updateList(); } catch (e) { log('刷新酒馆世界书列表失败：' + e.message); }
@@ -269,7 +287,7 @@
       checkbox.checked = actual;
       const bs = checkbox.closest('.wbm-book')?.querySelector('.wbm-book-state');
       if (bs) { const c = entryCount(data); bs.textContent = c.on + '/' + c.total; }
-      const api = await wi();
+      const api = (await wi()) && sid(name) === name;
       status('已' + (actual ? '开启' : '关闭') + '条目：' + (data.entries[uid].comment || uid) + (api ? '' : '（仅写入文件，请刷新酒馆页面后生效）'), !api);
       log('条目已保存 ' + name + ' / ' + uid + ' disable=' + data.entries[uid].disable);
     } catch (e) {
@@ -280,6 +298,32 @@
   }
 
   // ---------- 6. 下载 / 上传 ----------
+  // 把简版格式（条目只有 content/comment/key）补成酒馆完整条目；没写 constant 的一律设为蓝灯（常驻）
+  function normalizeBook(src) {
+    const ents = src && src.entries;
+    if (!ents || typeof ents !== 'object') throw new Error('不是世界书格式（缺少 entries）');
+    const list = Array.isArray(ents) ? ents.map((v, i) => [String(i), v]) : Object.entries(ents);
+    const used = new Set(), out = {};
+    let blue = 0;
+    list.forEach(([, v]) => { if (v && Number.isFinite(Number(v.uid))) used.add(Number(v.uid)); });
+    let next = 0;
+    for (const [, v] of list) {
+      if (!v || typeof v !== 'object') continue;
+      let uid;
+      if (Number.isFinite(Number(v.uid))) uid = Number(v.uid);
+      else { while (used.has(next)) next++; uid = next; used.add(uid); }
+      const key = Array.isArray(v.key) ? v.key : (typeof v.key === 'string' ? v.key.split(/[,，]/).map(x => x.trim()).filter(Boolean) : (Array.isArray(v.keys) ? v.keys : []));
+      if (v.constant === undefined) blue++;
+      out[String(uid)] = Object.assign({
+        uid, key, keysecondary: [], comment: '', content: '', constant: true, vectorized: false, selective: true, selectiveLogic: 0,
+        addMemo: true, order: 100, position: 0, disable: false, excludeRecursion: false, preventRecursion: false, delayUntilRecursion: false,
+        probability: 100, useProbability: true, depth: 4, group: '', groupOverride: false, groupWeight: 100, scanDepth: null,
+        caseSensitive: null, matchWholeWords: null, useGroupScoring: null, automationId: '', role: null, sticky: null, cooldown: null, delay: null, displayIndex: uid
+      }, v, { uid, key });
+    }
+    return { data: Object.assign({}, src, { entries: out }), count: Object.keys(out).length, blue };
+  }
+
   function download(name, data) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob), a = document.createElement('a');
@@ -304,8 +348,9 @@
             const name = safeName(f.name.replace(/\.json$/i, ''));
             if (books.includes(name)) { fail.push(f.name + '：同名世界书已存在，已跳过'); continue; }
             const data = raw.entries ? raw : (raw.data || raw.worldinfo || raw);
-            if (!data || typeof data.entries !== 'object') throw new Error('不是世界书格式（缺少 entries）');
-            await post('/api/worldinfo/edit', { name, data });   // edit 会直接创建文件
+            const norm = normalizeBook(data);
+            await post('/api/worldinfo/edit', { name, data: norm.data });   // edit 会直接创建文件
+            log('已上传「' + name + '」：' + norm.count + ' 个条目，其中 ' + norm.blue + ' 个自动设为蓝灯');
             ok++;
           } catch (e) { fail.push(f.name + '：' + e.message); }
         }
@@ -425,6 +470,6 @@
     const t = setInterval(() => { if (mount() || ++tries >= 120) clearInterval(t); }, 1000);
   }
 
-  window.worldbookManager = { refresh, getBooks: () => books.slice(), getGlobalBooks: () => globalNames() || [] };
+  window.worldbookManager = { refresh, normalizeBook, getBooks: () => books.slice(), getGlobalBooks: () => globalNames() || [] };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
