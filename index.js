@@ -160,7 +160,7 @@
     if (!arr.length) return '<div class="wbm-muted">这本世界书没有条目。</div>';
     return arr.map(([uid, v]) => {
       const comment = v.comment || ('条目 ' + uid), content = entryContent(v), keys = entryKeywords(v), on = entryEnabled(v);
-      return `<div class="wbm-entry"><div class="wbm-entry-head"><input class="wbm-check wbm-entry-toggle" type="checkbox" data-book="${esc(name)}" data-uid="${esc(uid)}" ${on ? 'checked' : ''} aria-label="启用条目 ${esc(comment)}"><b>${esc(comment)}</b><span class="wbm-entry-state">${on ? '开启' : '关闭'}</span></div><div class="wbm-entry-preview" title="${esc(content || '暂无内容')}">${esc(content || '（暂无内容）')}</div>${keys ? `<div class="wbm-entry-key">关键词：${esc(keys)}</div>` : ''}</div>`;
+      return `<div class="wbm-entry"><div class="wbm-entry-head"><input class="wbm-check wbm-entry-toggle" type="checkbox" data-book="${esc(name)}" data-uid="${esc(uid)}" ${on ? 'checked' : ''} aria-label="启用条目 ${esc(comment)}"><b>${esc(comment)}</b></div><div class="wbm-entry-preview" title="${esc(content || '暂无内容')}">${esc(content || '（暂无内容）')}</div>${keys ? `<div class="wbm-entry-key">关键词：${esc(keys)}</div>` : ''}</div>`;
     }).join('');
   }
 
@@ -214,8 +214,6 @@
       await saveBook(name, data);
       const actual = entryEnabled(data.entries[uid]);
       checkbox.checked = actual;
-      const st = checkbox.closest('.wbm-entry-head')?.querySelector('.wbm-entry-state');
-      if (st) st.textContent = actual ? '开启' : '关闭';
       const bs = checkbox.closest('.wbm-book')?.querySelector('.wbm-book-state');
       if (bs) { const c = entryCount(data); bs.textContent = c.on + '/' + c.total; }
       const api = await wi();
